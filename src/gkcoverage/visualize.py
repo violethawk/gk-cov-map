@@ -36,6 +36,17 @@ def _draw_goal(ax: plt.Axes) -> None:
     ax.set_ylabel("Goal-plane y (m)")
 
 
+PRIOR_DOMINANCE_HATCH = 0.78
+
+
+def _hatch_prior_dominated(ax: plt.Axes, xx: np.ndarray, yy: np.ndarray, dominance: np.ndarray):
+    """Hatch the region where the prior rather than the data drives the surface."""
+    mask = np.ma.masked_where(dominance < PRIOR_DOMINANCE_HATCH, dominance)
+    return ax.contourf(
+        xx, yy, mask, levels=[PRIOR_DOMINANCE_HATCH, 1.01], colors="none", hatches=["///"]
+    )
+
+
 def _uncertainty_alpha(sd: np.ndarray, prior_dominance: np.ndarray) -> np.ndarray:
     sd_scaled = sd / max(float(np.nanpercentile(sd, 95)), 1e-9)
     confidence = 1.0 - np.clip(0.55 * sd_scaled + 0.45 * prior_dominance, 0.0, 1.0)
@@ -80,8 +91,7 @@ def render_time_surface(fit: SurfaceFit, out_path: Path) -> dict[str, np.ndarray
         cmap="viridis_r",
         alpha=alpha,
     )
-    prior_mask = np.ma.masked_where(dominance < 0.78, dominance)
-    ax.contourf(xx, yy, prior_mask, levels=[0.78, 1.01], colors="none", hatches=["///"])
+    _hatch_prior_dominated(ax, xx, yy, dominance)
     _draw_goal(ax)
     title = f"Censoring-aware time-to-contact coverage — {fit.keeper_id} (n={fit.n_records})"
     ax.set_title(title)
@@ -126,8 +136,7 @@ def render_asymmetry_surface(fit: SurfaceFit, out_path: Path) -> dict[str, np.nd
         norm=TwoSlopeNorm(vmin=-bound, vcenter=0.0, vmax=bound),
         alpha=alpha,
     )
-    prior_mask = np.ma.masked_where(dominance < 0.78, dominance)
-    ax.contourf(xx, yy, prior_mask, levels=[0.78, 1.01], colors="none", hatches=["///"])
+    _hatch_prior_dominated(ax, xx, yy, dominance)
     _draw_goal(ax)
     ax.set_title(f"Learned asymmetry component A(x,y) — {fit.keeper_id}")
     colorbar = fig.colorbar(image, ax=ax, fraction=0.035, pad=0.025)
@@ -199,8 +208,7 @@ def render_velocity_surface(fit: SurfaceFit, out_path: Path) -> None:
         cmap="plasma",
         alpha=alpha,
     )
-    prior_mask = np.ma.masked_where(dominance < 0.78, dominance)
-    ax.contourf(xx, yy, prior_mask, levels=[0.78, 1.01], colors="none", hatches=["///"])
+    _hatch_prior_dominated(ax, xx, yy, dominance)
     _draw_goal(ax)
     ax.set_title(f"Companion displacement-velocity surface — {fit.keeper_id}")
     colorbar = fig.colorbar(image, ax=ax, fraction=0.035, pad=0.025)

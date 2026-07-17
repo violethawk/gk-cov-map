@@ -86,4 +86,9 @@ def test_non_contact_shots_are_used_as_censored_observations() -> None:
     fit = CoverageSurfaceModel().fit(records)
     assert fit.time_surface.n_observations == 200
     prediction = fit.time_surface.predict(np.array([[0.0, 1.2]]))
-    assert prediction["lower"][0] < prediction["mean"][0] < prediction["upper"][0]
+    # lower < mean < upper holds by construction for any beta, so assert the mean
+    # is a physically plausible time-to-contact and the interval really is the
+    # stated 95% multiple of sd about it.
+    assert 0.2 < prediction["mean"][0] < 0.6
+    half_width = (prediction["upper"][0] - prediction["lower"][0]) / 2.0
+    assert half_width == pytest.approx(1.959964 * prediction["sd"][0], rel=1e-6)
