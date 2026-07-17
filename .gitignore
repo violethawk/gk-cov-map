@@ -1,0 +1,34 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Packaging / build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual environments (README creates .venv)
+.venv/
+venv/
+env/
+
+# Test and coverage caches
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# Generated reports. `gkcoverage run --output outputs/<keeper>` writes PNG/HTML/CSV
+# renders; they are reproducible from the JSONL inputs and should not be tracked.
+outputs/
+examples/demo_output/
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store

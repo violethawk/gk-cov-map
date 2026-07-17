@@ -1,7 +1,0 @@
-numpy>=2.0
-scipy>=1.14
-matplotlib>=3.9
-pydantic>=2.9
-
-[dev]
-pytest>=8.3
