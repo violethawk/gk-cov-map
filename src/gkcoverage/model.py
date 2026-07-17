@@ -59,23 +59,48 @@ def _effective_dof(design: FloatArray, weights: FloatArray, precision: FloatArra
     """Degrees of freedom the penalized fit spends on the mean function.
 
     The trace of (X'WX + P)^-1 X'WX counts the parameters the data actually
-    determines. It is below the basis size because the prior absorbs the rest,
-    and it falls as n grows and the data outweighs the prior.
+    determines. It stays below the basis size because the prior absorbs the
+    rest, and it rises toward that ceiling as n grows and the data outweighs
+    the prior: against the default 36-term basis it is about 10 at n=20 and 20
+    at n=200. What falls as n grows is edf/n, the share of the sample the mean
+    function costs, which is the quantity the correction below answers to.
     """
     data_information = design.T @ (weights[:, None] * design)
     return float(np.trace(np.linalg.solve(data_information + precision, data_information)))
 
 
-def _residual_scale_correction(n: int, edf: float) -> float:
+def _effective_sample_size(weights: FloatArray, scale: float) -> float:
+    """Sample size in exact-observation equivalents, from the observed information.
+
+    A right-censored row says only that T exceeded the flight time, which carries
+    less information about the scale than an exact contact time does: its weight is
+    mills*(mills - z) rather than 1, so it contributes a fraction of a row. Summing
+    the weights relative to an exact row's 1/scale^2 counts how many exact-equivalent
+    observations the fit actually has. About 0.5 for a typical censored row here, so
+    a 200-shot sample with half its rows censored is worth roughly 160.
+
+    This is what the residual correction must divide, because edf is computed from
+    the same weights: pairing an information-weighted edf with a raw row count
+    mismatches numerator and denominator and under-corrects. With no censoring every
+    weight is 1/scale^2 and this returns n exactly, so the uncensored path is
+    unaffected.
+    """
+    return float(np.sum(weights) * scale**2)
+
+
+def _residual_scale_correction(n_effective: float, edf: float) -> float:
     """sqrt(n / (n - edf)), the residual-degrees-of-freedom correction.
 
     Maximum likelihood divides by n, which ignores the dof spent estimating the
     mean function, so the residual scale is biased low and the intervals are too
     narrow whenever the basis is large relative to n. The bias is what makes small
-    samples over-confident: at n=200 edf/n is about 0.10 and the correction is 5%,
-    while at n=40 edf/n reaches 0.45 and the correction is 35%.
+    samples over-confident: at n=200 edf/n_effective is about 0.12 and the
+    correction is 7%, while at n=40 it reaches 0.54 and the correction is 48%.
+
+    n_effective is the censoring-aware count from _effective_sample_size, not the
+    row count, and must be derived from the same weights as edf.
     """
-    return float(np.sqrt(n / max(float(n) - edf, 1.0)))
+    return float(np.sqrt(n_effective / max(float(n_effective) - edf, 1.0)))
 
 
 @dataclass(frozen=True)
@@ -366,8 +391,10 @@ class CoverageSurfaceModel:
         # correct it before it sets the interval width. The point estimate stays at
         # the ML optimum; only the scale used for inference moves.
         ml_sigma = float(np.exp(eta))
-        edf = _effective_dof(design, observed_weights(ml_sigma), precision)
-        sigma = ml_sigma * _residual_scale_correction(len(xy), edf)
+        ml_weights = observed_weights(ml_sigma)
+        edf = _effective_dof(design, ml_weights, precision)
+        n_effective = _effective_sample_size(ml_weights, ml_sigma)
+        sigma = ml_sigma * _residual_scale_correction(n_effective, edf)
         hessian = design.T @ (observed_weights(sigma)[:, None] * design) + precision
         covariance = np.linalg.pinv(hessian, rcond=1e-10)
         return GaussianSurfaceFit(
