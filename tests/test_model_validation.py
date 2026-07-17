@@ -7,6 +7,7 @@ from gkcoverage.model import (
     SIGMA_BOUNDS_S,
     CoverageSurfaceModel,
     _effective_dof,
+    _effective_sample_size,
     _residual_scale_correction,
 )
 from gkcoverage.simulate import ground_truth_time, simulate_penalties, true_upper_outer_contrast
@@ -109,6 +110,48 @@ def test_residual_scale_correction_tracks_the_residual_degrees_of_freedom() -> N
     assert _residual_scale_correction(40, 18.0) > _residual_scale_correction(200, 18.0)
     # Guarded rather than singular when the fit spends everything.
     assert _residual_scale_correction(10, 20.0) == pytest.approx(np.sqrt(10.0))
+
+
+def test_effective_sample_size_discounts_censored_rows() -> None:
+    # A censored row says only that T exceeded the flight time, so it informs the
+    # residual scale less than an exact contact time does and must count for less
+    # than a whole row.
+    scale = 0.05
+    exact = 1.0 / scale**2
+
+    # No censoring: every weight is 1/scale^2 and the count is exactly n, which is
+    # what leaves the uncensored velocity path unaffected.
+    assert _effective_sample_size(np.full(30, exact), scale) == pytest.approx(30.0)
+
+    # Twenty exact rows plus twenty half-weight censored rows are worth thirty.
+    mixed = np.r_[np.full(20, exact), np.full(20, 0.5 * exact)]
+    assert _effective_sample_size(mixed, scale) == pytest.approx(30.0)
+    assert _effective_sample_size(mixed, scale) < 40.0
+
+
+def test_censored_surface_corrects_against_effective_not_raw_sample_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The regression: the row count was passed where an information-weighted count
+    # belongs, while edf came from the censoring-discounted weights. Mismatching the
+    # two under-corrects the scale; at n=40 it left sigma about 15% low and pointwise
+    # coverage at 0.935 against a nominal 0.95. The effective count must therefore sit
+    # strictly between the exact-row count and the row count.
+    records = simulate_penalties(200, seed=0)
+    exact_rows = sum(not record.censored for record in records)
+    assert 0 < exact_rows < len(records)  # else the bound below proves nothing
+
+    seen: list[float] = []
+
+    def spy(n_effective: float, edf: float) -> float:
+        seen.append(n_effective)
+        return _residual_scale_correction(n_effective, edf)
+
+    monkeypatch.setattr("gkcoverage.model._residual_scale_correction", spy)
+    CoverageSurfaceModel().fit(records)
+
+    assert seen, "the censored surface must correct its residual scale"
+    assert exact_rows < seen[0] < len(records)
 
 
 def test_effective_dof_counts_what_the_data_determines() -> None:
