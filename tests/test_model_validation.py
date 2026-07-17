@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from gkcoverage.model import CoverageSurfaceModel
+from gkcoverage.model import SIGMA_BOUNDS_S, CoverageSurfaceModel
 from gkcoverage.simulate import simulate_penalties, true_upper_outer_contrast
 
 
@@ -64,6 +64,20 @@ def test_prior_dominance_does_not_invert_when_small_sample_widens_the_prior(
     tight = standard.time_surface.predict(corner)
     assert wide["sd"][0] > tight["sd"][0]
     assert wide["prior_dominance"][0] >= tight["prior_dominance"][0]
+
+
+def test_degenerate_residual_scale_is_reported_rather_than_silently_pinned() -> None:
+    # L-BFGS-B reports success=True at an active bound, so a residual scale that
+    # collapses onto the bound used to pass unnoticed and still produce Laplace
+    # intervals, which assume an interior optimum. Those fits are the badly
+    # calibrated ones: at n=20 they cover 0.81 of the true surface against a
+    # nominal 0.95, versus 0.91 for fits whose scale stays interior.
+    with pytest.raises(RuntimeError, match="residual scale reached its lower bound"):
+        CoverageSurfaceModel().fit(simulate_penalties(20, seed=3))
+
+    # The guard must not fire on a fit whose scale is genuinely interior.
+    fit = CoverageSurfaceModel().fit(simulate_penalties(200, seed=0))
+    assert SIGMA_BOUNDS_S[0] < fit.time_surface.sigma < SIGMA_BOUNDS_S[1]
 
 
 def test_non_contact_shots_are_used_as_censored_observations() -> None:

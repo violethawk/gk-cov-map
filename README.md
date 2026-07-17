@@ -98,6 +98,8 @@ Outputs:
 
 For `n < 150`, every model output carries a **PRIOR-DOMINATED SMALL-SAMPLE MODE** banner and uses deliberately wider priors.
 
+Below roughly 40 shots some samples are refused outright rather than reported: if the fitted residual scale reaches its bound it is constrained rather than estimated, and the reported intervals are Laplace approximations that assume an interior optimum. These are also the worst-calibrated fits — at `n=20` the ones that reach the bound cover 81% of the true surface against a nominal 95%, against 91% for the rest — so `gkcoverage run` raises with the observed scale and sample size instead of drawing a map.
+
 ## Simulation validation
 
 Generate synthetic annotations:

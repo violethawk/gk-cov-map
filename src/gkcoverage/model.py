@@ -15,6 +15,11 @@ from .schema import PenaltyRecord
 
 FloatArray = NDArray[np.float64]
 
+# Optimizer bounds on the censored surface's residual scale, in seconds. The lower
+# bound sits below the frame quantum of a 30 fps clip, so plausible data stays well
+# inside it; reaching either bound signals a degenerate fit rather than a real scale.
+SIGMA_BOUNDS_S = (0.015, 0.35)
+
 
 def _clamped_knots(lo: float, hi: float, n_basis: int, degree: int) -> FloatArray:
     internal_count = n_basis - degree - 1
@@ -288,18 +293,35 @@ class CoverageSurfaceModel:
         initial_rhs = (design.T @ pseudo) / 0.09**2 + precision @ prior_mean
         initial_beta = np.linalg.solve(initial_hessian, initial_rhs)
         initial = np.r_[initial_beta, np.log(0.075)]
+        eta_bounds = (float(np.log(SIGMA_BOUNDS_S[0])), float(np.log(SIGMA_BOUNDS_S[1])))
         result = minimize(
             fun=lambda t: objective(t)[0],
             x0=initial,
             jac=lambda t: objective(t)[1],
             method="L-BFGS-B",
-            bounds=[(None, None)] * len(prior_mean) + [(np.log(0.015), np.log(0.35))],
+            bounds=[(None, None)] * len(prior_mean) + [eta_bounds],
             options={"maxiter": 350, "ftol": 1e-9, "gtol": 2e-6, "maxls": 30},
         )
         if not result.success:
             raise RuntimeError(f"censored surface optimization failed: {result.message}")
+        eta = float(result.x[-1])
+        # L-BFGS-B reports success at an active bound, so the residual scale can be
+        # constrained rather than estimated without result.success ever noticing. The
+        # covariance below is a Laplace approximation, which assumes an interior
+        # optimum, so a boundary solution leaves the reported intervals with no valid
+        # basis: at n=20 the fits that pin cover 0.81 of the true surface against a
+        # nominal 0.95, versus 0.91 for the fits that do not.
+        if not eta_bounds[0] + 1e-6 < eta < eta_bounds[1] - 1e-6:
+            edge = "lower" if eta <= eta_bounds[0] + 1e-6 else "upper"
+            raise RuntimeError(
+                f"censored surface residual scale reached its {edge} bound "
+                f"({np.exp(eta):.4f} s, permitted {SIGMA_BOUNDS_S[0]}-{SIGMA_BOUNDS_S[1]} s) "
+                f"with n={len(xy)}: the scale is constrained rather than estimated, so the "
+                "Laplace intervals would not be trustworthy. This usually means too few "
+                "shots for the spline basis; fit more shots or coarsen SplineSpecification."
+            )
         beta = result.x[:-1]
-        sigma = float(np.exp(result.x[-1]))
+        sigma = float(np.exp(eta))
         mu = design @ beta
         z = (observed_or_limit - mu) / sigma
         weights = np.empty_like(z)
