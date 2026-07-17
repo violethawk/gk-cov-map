@@ -62,13 +62,27 @@ class SplineSpecification:
 
 
 class SymmetricSplineBasis:
-    """Tensor spline basis with an explicit symmetric/antisymmetric split."""
+    """Tensor spline basis with an explicit symmetric/antisymmetric split.
+
+    Because f(x,y) = S(|x|,y) + sign(x) A(|x|,y), the field jumps by 2 A(0,y)
+    across the centre line unless A(0,y) is pinned to zero. Clamped knots make
+    only the first |x| basis function non-zero at |x|=0, so the antisymmetric
+    block drops that function's ny coefficients and A(0,y) = 0 holds exactly
+    for every y. The symmetric block keeps its full basis.
+    """
 
     def __init__(self, spec: SplineSpecification) -> None:
         self.spec = spec
         self.x_knots = _clamped_knots(0.0, HALF_GOAL_WIDTH_M, spec.nx, spec.degree)
         self.y_knots = _clamped_knots(0.0, GOAL_HEIGHT_M, spec.ny, spec.degree)
         self.penalty = _difference_penalty(spec.nx, spec.ny)
+        self.n_symmetric = spec.nx * spec.ny
+        self.n_asymmetric = (spec.nx - 1) * spec.ny
+        self.penalty_symmetric = self.penalty
+        # Constraining the first ny coefficients to zero reduces the quadratic
+        # penalty form to its trailing block; the retained rows still penalize
+        # departure from the pinned zero, so A grows smoothly out of x=0.
+        self.penalty_asymmetric = self.penalty[spec.ny :, spec.ny :]
 
     def component_design(self, xy: ArrayLike) -> tuple[FloatArray, FloatArray]:
         points = np.asarray(xy, dtype=float)
@@ -77,7 +91,7 @@ class SymmetricSplineBasis:
         by = _bspline_basis(points[:, 1], self.y_knots, self.spec.degree)
         tensor = np.einsum("ni,nj->nij", bx, by).reshape(points.shape[0], -1)
         signs = np.sign(points[:, 0])[:, None]
-        return tensor, tensor * signs
+        return tensor, (tensor * signs)[:, self.spec.ny :]
 
     def design(self, xy: ArrayLike) -> FloatArray:
         symmetric, asymmetric = self.component_design(xy)
@@ -116,7 +130,6 @@ class GaussianSurfaceFit:
 
     def predict_components(self, xy: ArrayLike, level: float = 0.95) -> dict[str, FloatArray]:
         symmetric, asymmetric = self.basis.component_design(xy)
-        m = self.basis.spec.n_terms
         design_s = np.c_[symmetric, np.zeros_like(asymmetric)]
         design_a = np.c_[np.zeros_like(symmetric), asymmetric]
         z = norm.ppf(0.5 + level / 2.0)
@@ -208,19 +221,19 @@ class CoverageSurfaceModel:
         self.basis = SymmetricSplineBasis(spec or SplineSpecification())
 
     def _prior(self, n: int, small_sample: bool, center: float) -> tuple[FloatArray, FloatArray]:
-        m = self.basis.spec.n_terms
+        ms = self.basis.n_symmetric
+        ma = self.basis.n_asymmetric
         # Wider priors in deliberate small-sample mode: less ridge and less smoothness.
         smooth_s = 22.0 if not small_sample else 7.0
         smooth_a = 38.0 if not small_sample else 10.0
         ridge_s = 8.0 if not small_sample else 2.0
         ridge_a = 28.0 if not small_sample else 5.0
-        p = self.basis.penalty
-        precision_s = smooth_s * p + ridge_s * np.eye(m)
-        precision_a = smooth_a * p + ridge_a * np.eye(m)
+        precision_s = smooth_s * self.basis.penalty_symmetric + ridge_s * np.eye(ms)
+        precision_a = smooth_a * self.basis.penalty_asymmetric + ridge_a * np.eye(ma)
         precision = np.block(
-            [[precision_s, np.zeros((m, m))], [np.zeros((m, m)), precision_a]]
+            [[precision_s, np.zeros((ms, ma))], [np.zeros((ma, ms)), precision_a]]
         )
-        mean = np.r_[np.full(m, center), np.zeros(m)]
+        mean = np.r_[np.full(ms, center), np.zeros(ma)]
         return precision, mean
 
     def _fit_censored_time(
