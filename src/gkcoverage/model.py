@@ -106,50 +106,52 @@ class GaussianSurfaceFit:
     sigma: float
     prior_precision: FloatArray
     prior_mean: FloatArray
+    reference_prior_covariance: FloatArray
     n_observations: int
     response_name: str
     units: str
     uncertainty_scope: str = "Laplace/linear-Gaussian mean-function interval; smoothing hyperparameters fixed"
 
-    def predict(self, xy: ArrayLike, level: float = 0.95) -> dict[str, FloatArray]:
-        design = self.basis.design(xy)
+    def _prior_dominance(self, design: FloatArray, sd: FloatArray) -> FloatArray:
+        """Posterior SD as a fraction of the SD the reference prior alone implies.
+
+        0 is fully data-determined, 1 is no usable data support. The denominator
+        is the fixed standard prior rather than the prior this fit used, so the
+        value is comparable across fits. Dividing by the fit's own prior would
+        measure shrinkage under that prior instead: small-sample mode widens the
+        prior, which inflates the denominator faster than it inflates sd, so a
+        data-poor fit would report *less* prior dominance than a data-rich one.
+        Values above 1 (possible in small-sample mode, whose prior is wider than
+        the reference) saturate at fully prior-dominated.
+        """
+        prior_variance = np.einsum("ni,ij,nj->n", design, self.reference_prior_covariance, design)
+        prior_sd = np.sqrt(np.maximum(prior_variance, 1e-15))
+        return np.clip(sd / prior_sd, 0.0, 1.0)
+
+    def _summarize(self, design: FloatArray, level: float) -> dict[str, FloatArray]:
         mean = design @ self.beta
         variance = np.einsum("ni,ij,nj->n", design, self.covariance, design)
         sd = np.sqrt(np.maximum(variance, 0.0))
         z = norm.ppf(0.5 + level / 2.0)
-        prior_cov = np.linalg.pinv(self.prior_precision)
-        prior_variance = np.einsum("ni,ij,nj->n", design, prior_cov, design)
-        prior_sd = np.sqrt(np.maximum(prior_variance, 1e-15))
         return {
             "mean": mean,
             "sd": sd,
             "lower": mean - z * sd,
             "upper": mean + z * sd,
-            "prior_dominance": np.clip(sd / prior_sd, 0.0, 1.0),
+            "prior_dominance": self._prior_dominance(design, sd),
         }
+
+    def predict(self, xy: ArrayLike, level: float = 0.95) -> dict[str, FloatArray]:
+        return self._summarize(self.basis.design(xy), level)
 
     def predict_components(self, xy: ArrayLike, level: float = 0.95) -> dict[str, FloatArray]:
         symmetric, asymmetric = self.basis.component_design(xy)
         design_s = np.c_[symmetric, np.zeros_like(asymmetric)]
         design_a = np.c_[np.zeros_like(symmetric), asymmetric]
-        z = norm.ppf(0.5 + level / 2.0)
-        prior_cov = np.linalg.pinv(self.prior_precision)
-
-        def summarize(design: FloatArray) -> dict[str, FloatArray]:
-            mean = design @ self.beta
-            variance = np.einsum("ni,ij,nj->n", design, self.covariance, design)
-            sd = np.sqrt(np.maximum(variance, 0.0))
-            prior_variance = np.einsum("ni,ij,nj->n", design, prior_cov, design)
-            prior_sd = np.sqrt(np.maximum(prior_variance, 1e-15))
-            return {
-                "mean": mean,
-                "sd": sd,
-                "lower": mean - z * sd,
-                "upper": mean + z * sd,
-                "prior_dominance": np.clip(sd / prior_sd, 0.0, 1.0),
-            }
-
-        return {"symmetric": summarize(design_s), "asymmetric": summarize(design_a)}
+        return {
+            "symmetric": self._summarize(design_s, level),
+            "asymmetric": self._summarize(design_a, level),
+        }
 
     def paired_contrast(self, positive_xy: ArrayLike, level: float = 0.95) -> dict[str, float]:
         positive = np.asarray(positive_xy, dtype=float)
@@ -219,8 +221,14 @@ class CoverageSurfaceModel:
 
     def __init__(self, spec: SplineSpecification | None = None) -> None:
         self.basis = SymmetricSplineBasis(spec or SplineSpecification())
+        # Denominator for prior_dominance, fixed at the standard prior so the
+        # diagnostic does not move when small-sample mode widens the real prior.
+        # Only the precision matters here, so the prior centre is irrelevant.
+        self.reference_prior_covariance = np.linalg.pinv(
+            self._prior(small_sample=False, center=0.0)[0]
+        )
 
-    def _prior(self, n: int, small_sample: bool, center: float) -> tuple[FloatArray, FloatArray]:
+    def _prior(self, small_sample: bool, center: float) -> tuple[FloatArray, FloatArray]:
         ms = self.basis.n_symmetric
         ma = self.basis.n_asymmetric
         # Wider priors in deliberate small-sample mode: less ridge and less smoothness.
@@ -244,7 +252,7 @@ class CoverageSurfaceModel:
         small_sample: bool,
     ) -> GaussianSurfaceFit:
         design = self.basis.design(xy)
-        precision, prior_mean = self._prior(len(xy), small_sample, center=0.42)
+        precision, prior_mean = self._prior(small_sample, center=0.42)
 
         def objective(theta: FloatArray) -> tuple[float, FloatArray]:
             beta = theta[:-1]
@@ -311,6 +319,7 @@ class CoverageSurfaceModel:
             sigma=sigma,
             prior_precision=precision,
             prior_mean=prior_mean,
+            reference_prior_covariance=self.reference_prior_covariance,
             n_observations=len(xy),
             response_name="censoring-aware time-to-contact surface",
             units="seconds",
@@ -324,7 +333,7 @@ class CoverageSurfaceModel:
     ) -> GaussianSurfaceFit:
         design = self.basis.design(xy)
         center = float(np.median(velocity))
-        precision, prior_mean = self._prior(len(xy), small_sample, center=center)
+        precision, prior_mean = self._prior(small_sample, center=center)
         # Pilot simplification: empirical residual scale, then conjugate penalized least squares.
         sigma = max(float(np.std(velocity, ddof=1)), 0.08)
         data_precision = 1.0 / sigma**2
@@ -344,6 +353,7 @@ class CoverageSurfaceModel:
             sigma=sigma,
             prior_precision=precision,
             prior_mean=prior_mean,
+            reference_prior_covariance=self.reference_prior_covariance,
             n_observations=len(xy),
             response_name="displacement-velocity surface",
             units="metres/second",

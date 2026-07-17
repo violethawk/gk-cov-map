@@ -42,6 +42,30 @@ def test_surface_is_continuous_across_the_centre_line() -> None:
     assert np.max(np.abs(asymmetric["mean"])) < 1e-9
 
 
+def test_prior_dominance_does_not_invert_when_small_sample_widens_the_prior(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Holding the data fixed, only the prior mode changes. A wider prior means
+    # more real uncertainty, so reported prior dominance must not fall. Dividing
+    # by each fit's own prior inverted this: widening the prior inflated the
+    # denominator faster than sd, so the banner-ON fit claimed to be less
+    # prior-dominated than the banner-OFF one.
+    records = simulate_penalties(149, seed=0)
+    corner = np.array([[-3.65, 2.43]])
+
+    widened = CoverageSurfaceModel().fit(records)
+    assert widened.small_sample
+
+    monkeypatch.setattr("gkcoverage.model.SMALL_SAMPLE_THRESHOLD", 0)
+    standard = CoverageSurfaceModel().fit(records)
+    assert not standard.small_sample
+
+    wide = widened.time_surface.predict(corner)
+    tight = standard.time_surface.predict(corner)
+    assert wide["sd"][0] > tight["sd"][0]
+    assert wide["prior_dominance"][0] >= tight["prior_dominance"][0]
+
+
 def test_non_contact_shots_are_used_as_censored_observations() -> None:
     records = simulate_penalties(200, seed=17)
     assert any(record.censored for record in records)
