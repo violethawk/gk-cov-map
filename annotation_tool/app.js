@@ -1,5 +1,12 @@
-import { GOAL_PLANE_POINTS, projectPoint, solveHomography } from "./geometry.js";
+import { projectPoint } from "./geometry.js";
 import { parseMp4Fps } from "./mp4fps.js";
+import {
+  MARKER_LABELS,
+  READY_MESSAGE,
+  annotationHomography,
+  buildRecord,
+  validateAnnotation,
+} from "./record.js";
 
 const video = document.querySelector("#video");
 const canvas = document.querySelector("#overlay");
@@ -8,17 +15,7 @@ const scrubber = document.querySelector("#scrubber");
 const frameReadout = document.querySelector("#frameReadout");
 const validation = document.querySelector("#validation");
 const fpsStatus = document.querySelector("#fpsStatus");
-const markerLabels = {
-  left_post_base: "left post base",
-  right_post_base: "right post base",
-  left_crossbar: "left crossbar corner",
-  right_crossbar: "right crossbar corner",
-  ball_crossing: "ball crossing",
-  keeper_strike: "keeper COM at strike",
-  keeper_crossing: "keeper COM at crossing",
-  contact_location: "contact location",
-};
-const calibrationOrder = ["left_post_base", "right_post_base", "left_crossbar", "right_crossbar"];
+const markerLabels = MARKER_LABELS;
 let clipFile = null;
 let fps = null;
 let fpsMetadata = null;
@@ -99,19 +96,8 @@ function nearestFrame() {
   return Math.max(0, Math.min(maxFrame(), Math.round(video.currentTime * fps)));
 }
 
-function calibrationPoints() {
-  return calibrationOrder.map((name) => markers[name]);
-}
-
 function homography() {
-  const points = calibrationPoints();
-  if (points.some((point) => !point)) throw new Error("All four goal-frame reference points are required");
-  return solveHomography(points, GOAL_PLANE_POINTS);
-}
-
-function projected(name) {
-  if (!markers[name]) throw new Error(`${markerLabels[name]} is not marked`);
-  return projectPoint(homography(), markers[name]);
+  return annotationHomography(markers);
 }
 
 function updateCoordinateReadout() {
@@ -134,66 +120,30 @@ function qualityFlags() {
   return [...document.querySelectorAll(".quality:checked")].map((input) => input.value);
 }
 
-function validateState() {
-  const errors = [];
-  if (!clipFile) errors.push("Load an MP4 clip.");
-  if (!fps) errors.push("FPS metadata is unavailable.");
-  if (!("showSaveFilePicker" in window)) errors.push("Direct append requires Chromium File System Access API.");
-  if (!jsonlHandle) errors.push("Choose or create the append-only JSONL destination.");
-  if (!document.querySelector("#keeperId").value.trim()) errors.push("Keeper ID is required.");
-  if (!document.querySelector("#annotator").value.trim()) errors.push("Annotator is required.");
-  if (strikeFrame === null) errors.push("Mark the strike frame.");
-  if (crossingFrame === null) errors.push("Mark the crossing/contact frame.");
-  if (strikeFrame !== null && crossingFrame !== null && crossingFrame <= strikeFrame) errors.push("Crossing frame must follow strike frame.");
-  for (const name of [...calibrationOrder, "ball_crossing", "keeper_strike", "keeper_crossing"]) {
-    if (!markers[name]) errors.push(`Mark ${markerLabels[name]}.`);
-  }
-  const outcome = document.querySelector("#outcome").value;
-  if (outcome === "save" && !markers.contact_location) errors.push("Save outcome requires a contact location.");
-  if (outcome === "excluded") errors.push("Off-target clips are excluded and cannot be appended.");
-  try { if (calibrationPoints().every(Boolean)) homography(); } catch (error) { errors.push(error.message); }
-  validation.textContent = errors.length ? errors.map((error) => `• ${error}`).join("\n") : "Ready to append. Geometry, timing, and censoring logic are internally consistent.";
-  return errors;
+function annotationState() {
+  return {
+    clipFile,
+    fps,
+    fpsMetadata,
+    strikeFrame,
+    crossingFrame,
+    markers,
+    keeperId: document.querySelector("#keeperId").value,
+    annotator: document.querySelector("#annotator").value,
+    sourceUrl: document.querySelector("#sourceUrl").value,
+    outcome: document.querySelector("#outcome").value,
+    diveDirection: document.querySelector("#diveDirection").value,
+    bodyPart: document.querySelector("#bodyPart").value,
+    qualityFlags: qualityFlags(),
+    filePickerAvailable: "showSaveFilePicker" in window,
+    jsonlChosen: Boolean(jsonlHandle),
+  };
 }
 
-function buildRecord() {
-  const errors = validateState();
-  if (errors.some((error) => !error.includes("fallback"))) throw new Error("Resolve validation errors before saving");
-  const outcome = document.querySelector("#outcome").value;
-  const contact = outcome === "save";
-  const ball = projected("ball_crossing");
-  const keeperStrike = projected("keeper_strike");
-  const keeperCrossing = projected("keeper_crossing");
-  const flightTime = (crossingFrame - strikeFrame) / fps;
-  return {
-    id: crypto.randomUUID(),
-    keeper_id: document.querySelector("#keeperId").value.trim(),
-    source_url: document.querySelector("#sourceUrl").value.trim(),
-    clip_file: clipFile.name,
-    fps,
-    strike_frame: strikeFrame,
-    crossing_frame: crossingFrame,
-    flight_time_s: flightTime,
-    ball_crossing_xy_m: ball,
-    keeper_pos_at_strike_xy_m: keeperStrike,
-    keeper_pos_at_crossing_xy_m: keeperCrossing,
-    displacement_m: [keeperCrossing[0] - keeperStrike[0], keeperCrossing[1] - keeperStrike[1]],
-    contact,
-    contact_xy_m: contact ? projected("contact_location") : null,
-    time_to_contact_s: contact ? flightTime : null,
-    censored: !contact,
-    outcome,
-    dive_direction: document.querySelector("#diveDirection").value,
-    contact_body_part: document.querySelector("#bodyPart").value.trim() || null,
-    quality_flags: qualityFlags(),
-    annotator: document.querySelector("#annotator").value.trim(),
-    annotated_at: new Date().toISOString(),
-    annotation_metadata: {
-      homography_pixel_to_goal: homography(),
-      goal_reference_pixels: Object.fromEntries(calibrationOrder.map((name) => [name, markers[name]])),
-      fps_metadata: fpsMetadata,
-    },
-  };
+function validateState() {
+  const errors = validateAnnotation(annotationState());
+  validation.textContent = errors.length ? errors.map((error) => `• ${error}`).join("\n") : READY_MESSAGE;
+  return errors;
 }
 
 async function appendJsonl(record) {
@@ -296,7 +246,7 @@ document.querySelector("#chooseJsonl").addEventListener("click", async () => {
 
 document.querySelector("#saveRecord").addEventListener("click", async () => {
   try {
-    const record = buildRecord();
+    const record = buildRecord(annotationState());
     await appendJsonl(record);
     validation.textContent = `Appended ${record.id}\nflight=${record.flight_time_s.toFixed(4)} s; censored=${record.censored}`;
     resetAnnotation();
