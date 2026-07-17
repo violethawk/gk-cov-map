@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import base64
 import csv
-import io
 import json
+from html import escape
 from pathlib import Path
 from typing import Iterable
 
@@ -278,13 +278,21 @@ def export_report(fit: SurfaceFit, records: list[PenaltyRecord], output_dir: str
         ("Raw data", "raw_png"),
         ("Displacement velocity", "velocity_png"),
     ]:
-        cards.append(f'<section><h2>{title}</h2><img src="{_png_data_uri(paths[key])}" alt="{title}"></section>')
-    banner_html = f'<div class="banner">{fit.banner}</div>' if fit.banner else ""
+        cards.append(
+            f"<section><h2>{escape(title)}</h2>"
+            f'<img src="{_png_data_uri(paths[key])}" alt="{escape(title)}"></section>'
+        )
+    banner_html = f'<div class="banner">{escape(fit.banner)}</div>' if fit.banner else ""
+    # keeper_id arrives from the JSONL, which the annotation tool fills from a free-text
+    # field, so it is untrusted text rather than markup: interpolated raw it both breaks
+    # the document on an ordinary id like "A & B" and executes anything a shared JSONL
+    # cares to carry. The summary lands in a <pre>, which a "</pre>" would escape, and
+    # the banner is generated here but escaped anyway so the rule holds at every seam.
     html = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Goalkeeper coverage report</title>
 <style>body{{font-family:system-ui,sans-serif;margin:2rem;max-width:1200px}}img{{width:100%;height:auto;border:1px solid #ddd}}section{{margin:2rem 0}}.banner{{padding:1rem;background:#fff3cd;border:1px solid #7a5d00;font-weight:700}}code{{background:#f4f4f4;padding:.15rem .3rem}}</style></head>
-<body><h1>Goalkeeper coverage surface: {fit.keeper_id}</h1>{banner_html}
+<body><h1>Goalkeeper coverage surface: {escape(fit.keeper_id)}</h1>{banner_html}
 <p>n={fit.n_records}. Exact saves and right-censored non-contact shots were fit together. Uncertainty is encoded inside each heatmap by fading and hatching.</p>
-<pre>{json.dumps(summary, indent=2)}</pre>{''.join(cards)}</body></html>"""
+<pre>{escape(json.dumps(summary, indent=2))}</pre>{''.join(cards)}</body></html>"""
     paths["html"].write_text(html, encoding="utf-8")
     return paths
