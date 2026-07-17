@@ -206,6 +206,35 @@ def test_grid_csv_holds_the_fitted_surface(tmp_path: Path) -> None:
         )
 
 
+def test_report_html_escapes_the_keeper_id(tmp_path: Path) -> None:
+    # keeper_id reaches the report from the JSONL, which the annotation tool fills from
+    # a free-text field, so it is untrusted text. report.html embeds its images as data
+    # URIs specifically so it can be handed to someone else, and interpolated raw this
+    # payload runs when they open it.
+    payload = "<script>alert(document.domain)</script>"
+    records = simulate_penalties(200, seed=0, keeper_id=payload)
+    fit = CoverageSurfaceModel().fit(records)
+    html = export_report(fit, records, tmp_path)["html"].read_text(encoding="utf-8")
+
+    assert payload not in html
+    assert "&lt;script&gt;alert(document.domain)&lt;/script&gt;" in html
+    # The id must still be legible once escaped, not dropped.
+    assert "Goalkeeper coverage surface:" in html
+
+
+def test_report_html_survives_an_ordinary_id_that_is_not_markup(tmp_path: Path) -> None:
+    # The bug bites without an attacker: "&" and "<" are legal in a keeper id and would
+    # silently corrupt the document. summary.json holds the same id and must keep it raw,
+    # since JSON escaping is not HTML escaping.
+    records = simulate_penalties(200, seed=0, keeper_id="A & B <1>")
+    fit = CoverageSurfaceModel().fit(records)
+    paths = export_report(fit, records, tmp_path)
+    html = paths["html"].read_text(encoding="utf-8")
+
+    assert "A &amp; B &lt;1&gt;" in html
+    assert json.loads(paths["summary"].read_text(encoding="utf-8"))["keeper_id"] == "A & B <1>"
+
+
 def test_summary_json_reports_the_fitted_asymmetry(tmp_path: Path) -> None:
     records = simulate_penalties(200, seed=0)
     fit = CoverageSurfaceModel().fit(records)

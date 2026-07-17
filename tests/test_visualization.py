@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from html import escape
 from pathlib import Path
 
 import numpy as np
@@ -31,5 +32,10 @@ def test_small_sample_banner_appears_in_all_model_outputs(tmp_path: Path) -> Non
     assert fit.small_sample
     assert "PRIOR-DOMINATED SMALL-SAMPLE MODE" in fit.banner
     paths = export_report(fit, records, tmp_path)
-    assert fit.banner in paths["html"].read_text(encoding="utf-8")
+    # The banner reads "n=80 < 150", so it carries a literal "<" into the document and
+    # has to be escaped like any other text. Browsers recover from a "<" followed by a
+    # space, which is why the raw form looked fine, but it is not valid markup.
+    assert escape(fit.banner) in paths["html"].read_text(encoding="utf-8")
+    assert "n=80 &lt; 150" in paths["html"].read_text(encoding="utf-8")
+    # summary.json is JSON, not HTML, so the banner stays raw there.
     assert fit.banner in paths["summary"].read_text(encoding="utf-8")
