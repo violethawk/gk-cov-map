@@ -72,8 +72,10 @@ def test_degenerate_residual_scale_is_reported_rather_than_silently_pinned() -> 
     # intervals, which assume an interior optimum. Those fits are the badly
     # calibrated ones: at n=20 they cover 0.81 of the true surface against a
     # nominal 0.95, versus 0.91 for fits whose scale stays interior.
+    # This sample drives the unbounded scale to about 2e-6 s, four orders of
+    # magnitude under the bound, so the pin does not depend on optimizer details.
     with pytest.raises(RuntimeError, match="residual scale reached its lower bound"):
-        CoverageSurfaceModel().fit(simulate_penalties(20, seed=3))
+        CoverageSurfaceModel().fit(simulate_penalties(16, seed=11))
 
     # The guard must not fire on a fit whose scale is genuinely interior.
     fit = CoverageSurfaceModel().fit(simulate_penalties(200, seed=0))

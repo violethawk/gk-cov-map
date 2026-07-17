@@ -1,5 +1,7 @@
 # Goalkeeper Coverage Surface — Penalty-Kick Prototype
 
+[![tests](https://github.com/violethawk/gk-cov-map/actions/workflows/tests.yml/badge.svg)](https://github.com/violethawk/gk-cov-map/actions/workflows/tests.yml)
+
 A local, censoring-aware Phase 1 prototype for estimating a continuous goalkeeper coverage surface from manually annotated penalty clips.
 
 ## 1. Coordinate system

@@ -1,0 +1,62 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.11 is the floor declared in pyproject; 3.13 is the newest supported.
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      # tests/test_annotation_javascript.py runs the annotation tool's ES modules
+      # through a real node subprocess with check=True, so node is required rather
+      # than optional: without it those tests error instead of skipping.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install package and test dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
+
+      - name: Report toolchain
+        run: python -c "import numpy, scipy, matplotlib, pydantic; print('numpy', numpy.__version__, '| scipy', scipy.__version__, '| matplotlib', matplotlib.__version__, '| pydantic', pydantic.VERSION)" && node --version
+
+      - name: Tests
+        run: pytest -m "not slow"
+
+      # The 20-run simulation acceptance gate. It is the project's headline claim,
+      # so it runs on every push rather than living in a nightly job; it costs
+      # about three seconds.
+      - name: Acceptance gate
+        run: pytest -m slow
+
+      # Walks the workflow the README documents. test_cli.py covers the `run`
+      # subcommand only, so `simulate` and `validate` are otherwise never invoked;
+      # `validate` exits non-zero if the gate fails, so this asserts rather than
+      # just executes.
+      - name: Exercise the documented CLI workflow
+        run: |
+          gkcoverage simulate --n 200 --seed 1 --output "${RUNNER_TEMP}/ci_sim.jsonl"
+          gkcoverage run --input "${RUNNER_TEMP}/ci_sim.jsonl" --keeper-id sim_keeper --output "${RUNNER_TEMP}/ci_report"
+          test -s "${RUNNER_TEMP}/ci_report/report.html"
+          gkcoverage validate --runs 5 --n 200
