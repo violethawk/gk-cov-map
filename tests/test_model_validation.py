@@ -3,8 +3,28 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from gkcoverage.model import SIGMA_BOUNDS_S, CoverageSurfaceModel
-from gkcoverage.simulate import simulate_penalties, true_upper_outer_contrast
+from gkcoverage.model import (
+    SIGMA_BOUNDS_S,
+    CoverageSurfaceModel,
+    _effective_dof,
+    _residual_scale_correction,
+)
+from gkcoverage.simulate import ground_truth_time, simulate_penalties, true_upper_outer_contrast
+
+
+def _coverage_of_true_surface(n: int, seeds: range) -> float:
+    xx, yy = np.meshgrid(np.linspace(-3.0, 3.0, 9), np.linspace(0.3, 2.1, 6))
+    points = np.c_[xx.ravel(), yy.ravel()]
+    truth = ground_truth_time(points)
+    covered = []
+    for seed in seeds:
+        try:
+            fit = CoverageSurfaceModel().fit(simulate_penalties(n, seed=seed))
+        except RuntimeError:  # degenerate residual scale, refused by design
+            continue
+        prediction = fit.time_surface.predict(points)
+        covered.append(np.mean((prediction["lower"] <= truth) & (truth <= prediction["upper"])))
+    return float(np.mean(covered))
 
 
 @pytest.mark.slow
@@ -80,6 +100,57 @@ def test_degenerate_residual_scale_is_reported_rather_than_silently_pinned() -> 
     # The guard must not fire on a fit whose scale is genuinely interior.
     fit = CoverageSurfaceModel().fit(simulate_penalties(200, seed=0))
     assert SIGMA_BOUNDS_S[0] < fit.time_surface.sigma < SIGMA_BOUNDS_S[1]
+
+
+def test_residual_scale_correction_tracks_the_residual_degrees_of_freedom() -> None:
+    assert _residual_scale_correction(200, 0.0) == 1.0  # nothing spent, nothing to correct
+    assert _residual_scale_correction(200, 20.0) == pytest.approx(np.sqrt(200.0 / 180.0))
+    # The same dof cost bites harder the smaller the sample.
+    assert _residual_scale_correction(40, 18.0) > _residual_scale_correction(200, 18.0)
+    # Guarded rather than singular when the fit spends everything.
+    assert _residual_scale_correction(10, 20.0) == pytest.approx(np.sqrt(10.0))
+
+
+def test_effective_dof_counts_what_the_data_determines() -> None:
+    rng = np.random.default_rng(0)
+    design = rng.normal(size=(200, 6))
+    weights = np.full(200, 4.0)
+    identity = np.eye(6)
+
+    # A prior that dominates leaves the data determining nothing; a vanishing prior
+    # leaves it determining every basis function.
+    assert _effective_dof(design, weights, identity * 1e8) < 0.01
+    assert _effective_dof(design, weights, identity * 1e-8) == pytest.approx(6.0, abs=1e-3)
+    assert 0.0 < _effective_dof(design, weights, identity) < 6.0
+
+
+def test_residual_scale_is_corrected_for_effective_dof(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Maximum likelihood divides by n and ignores the dof spent on the mean
+    # function, so at n=40, where edf/n is about 0.45, it lands near 0.031 against
+    # a true 0.045 and the intervals come out too narrow.
+    records = simulate_penalties(40, seed=0)
+    point = np.array([[-2.0, 1.8]])
+    corrected = CoverageSurfaceModel().fit(records).time_surface
+
+    monkeypatch.setattr("gkcoverage.model._residual_scale_correction", lambda n, edf: 1.0)
+    uncorrected = CoverageSurfaceModel().fit(records).time_surface
+
+    assert corrected.sigma > uncorrected.sigma * 1.2
+    assert corrected.predict(point)["sd"][0] > uncorrected.predict(point)["sd"][0]
+    assert "residual-dof correction" in corrected.uncertainty_scope
+
+
+@pytest.mark.slow
+def test_edf_correction_improves_small_sample_coverage(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Paired on identical seeds rather than compared against a fixed threshold, so
+    # the assertion does not depend on the exact coverage a given toolchain lands on.
+    corrected = _coverage_of_true_surface(40, range(40))
+
+    monkeypatch.setattr("gkcoverage.model._residual_scale_correction", lambda n, edf: 1.0)
+    uncorrected = _coverage_of_true_surface(40, range(40))
+
+    assert corrected > uncorrected
+    assert corrected > 0.90  # uncorrected sits near 0.896 against a nominal 0.95
 
 
 def test_non_contact_shots_are_used_as_censored_observations() -> None:

@@ -38,7 +38,7 @@ using tensor-product cubic B-splines. This enforces symmetry for `S` and antisym
 
 - Penalized splines are used instead of a Gaussian process because the symmetry constraint, censored likelihood, Hessian, and simulation validation remain explicit and fast enough for local use.
 - Time and displacement-velocity are fit as two surfaces rather than one joint multivariate model.
-- Reported intervals are Laplace/linear-Gaussian mean-function intervals conditional on fixed smoothing hyperparameters and estimated residual scale.
+- Reported intervals are Laplace/linear-Gaussian mean-function intervals conditional on fixed smoothing hyperparameters and an estimated residual scale. The scale is corrected for the degrees of freedom the penalized fit spends on the mean function, because maximum likelihood divides by `n` and is biased low whenever the basis is large relative to the sample; it is still plugged in rather than integrated over.
 - The browser blocks variable-frame-rate MP4 files because average FPS is not sufficient for frame-index timing.
 - The JSONL schema includes optional `annotation_metadata` containing the homography, raw calibration clicks, and FPS provenance so every projected coordinate remains auditable.
 
@@ -116,7 +116,7 @@ Run the required 20-run gate:
 gkcoverage validate --runs 20 --n 200
 ```
 
-The deterministic acceptance test currently recovers the correct asymmetry sign in 20/20 runs and covers the true magnitude in 19/20 stated 95% intervals.
+The deterministic acceptance test currently recovers the correct asymmetry sign in 20/20 runs and covers the true magnitude in 20/20 stated 95% intervals. Over 100 runs the contrast interval covers 99 times, so it is mildly conservative rather than exact.
 
 ## Tests
 

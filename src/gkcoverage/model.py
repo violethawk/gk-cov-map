@@ -55,6 +55,29 @@ def _difference_penalty(nx: int, ny: int) -> FloatArray:
     return px + py
 
 
+def _effective_dof(design: FloatArray, weights: FloatArray, precision: FloatArray) -> float:
+    """Degrees of freedom the penalized fit spends on the mean function.
+
+    The trace of (X'WX + P)^-1 X'WX counts the parameters the data actually
+    determines. It is below the basis size because the prior absorbs the rest,
+    and it falls as n grows and the data outweighs the prior.
+    """
+    data_information = design.T @ (weights[:, None] * design)
+    return float(np.trace(np.linalg.solve(data_information + precision, data_information)))
+
+
+def _residual_scale_correction(n: int, edf: float) -> float:
+    """sqrt(n / (n - edf)), the residual-degrees-of-freedom correction.
+
+    Maximum likelihood divides by n, which ignores the dof spent estimating the
+    mean function, so the residual scale is biased low and the intervals are too
+    narrow whenever the basis is large relative to n. The bias is what makes small
+    samples over-confident: at n=200 edf/n is about 0.10 and the correction is 5%,
+    while at n=40 edf/n reaches 0.45 and the correction is 35%.
+    """
+    return float(np.sqrt(n / max(float(n) - edf, 1.0)))
+
+
 @dataclass(frozen=True)
 class SplineSpecification:
     nx: int = 5
@@ -115,7 +138,10 @@ class GaussianSurfaceFit:
     n_observations: int
     response_name: str
     units: str
-    uncertainty_scope: str = "Laplace/linear-Gaussian mean-function interval; smoothing hyperparameters fixed"
+    uncertainty_scope: str = (
+        "Laplace/linear-Gaussian mean-function interval; smoothing hyperparameters fixed; "
+        "residual scale plugged in after a residual-dof correction, not integrated over"
+    )
 
     def _prior_dominance(self, design: FloatArray, sd: FloatArray) -> FloatArray:
         """Posterior SD as a fraction of the SD the reference prior alone implies.
@@ -321,18 +347,28 @@ class CoverageSurfaceModel:
                 "shots for the spline basis; fit more shots or coarsen SplineSpecification."
             )
         beta = result.x[:-1]
-        sigma = float(np.exp(eta))
         mu = design @ beta
-        z = (observed_or_limit - mu) / sigma
-        weights = np.empty_like(z)
-        weights[~censored] = 1.0 / sigma**2
-        if np.any(censored):
-            zc = z[censored]
-            log_survival = log_ndtr(-zc)
-            log_phi = -0.5 * zc**2 - 0.5 * np.log(2.0 * np.pi)
-            mills = np.exp(np.clip(log_phi - log_survival, -50.0, 50.0))
-            weights[censored] = np.maximum(mills * (mills - zc), 1e-8) / sigma**2
-        hessian = design.T @ (weights[:, None] * design) + precision
+
+        def observed_weights(scale: float) -> FloatArray:
+            """Observed-information weight per row at a given residual scale."""
+            z = (observed_or_limit - mu) / scale
+            weights = np.empty_like(z)
+            weights[~censored] = 1.0 / scale**2
+            if np.any(censored):
+                zc = z[censored]
+                log_survival = log_ndtr(-zc)
+                log_phi = -0.5 * zc**2 - 0.5 * np.log(2.0 * np.pi)
+                mills = np.exp(np.clip(log_phi - log_survival, -50.0, 50.0))
+                weights[censored] = np.maximum(mills * (mills - zc), 1e-8) / scale**2
+            return weights
+
+        # The joint ML scale is biased low by the dof spent on the mean function, so
+        # correct it before it sets the interval width. The point estimate stays at
+        # the ML optimum; only the scale used for inference moves.
+        ml_sigma = float(np.exp(eta))
+        edf = _effective_dof(design, observed_weights(ml_sigma), precision)
+        sigma = ml_sigma * _residual_scale_correction(len(xy), edf)
+        hessian = design.T @ (observed_weights(sigma)[:, None] * design) + precision
         covariance = np.linalg.pinv(hessian, rcond=1e-10)
         return GaussianSurfaceFit(
             basis=self.basis,
@@ -363,7 +399,11 @@ class CoverageSurfaceModel:
         rhs = data_precision * (design.T @ velocity) + precision @ prior_mean
         beta = np.linalg.solve(hessian, rhs)
         residual = velocity - design @ beta
-        sigma = max(float(np.sqrt(np.mean(residual**2))), 0.03)
+        # Divide the residual sum of squares by the residual dof rather than by n,
+        # which would ignore the dof the penalized fit spends on the mean function.
+        edf = _effective_dof(design, np.full(len(velocity), data_precision), precision)
+        residual_dof = max(float(len(velocity)) - edf, 1.0)
+        sigma = max(float(np.sqrt(float(residual @ residual) / residual_dof)), 0.03)
         hessian = (design.T @ design) / sigma**2 + precision
         rhs = (design.T @ velocity) / sigma**2 + precision @ prior_mean
         beta = np.linalg.solve(hessian, rhs)
@@ -379,7 +419,10 @@ class CoverageSurfaceModel:
             n_observations=len(xy),
             response_name="displacement-velocity surface",
             units="metres/second",
-            uncertainty_scope="Linear-Gaussian mean-function interval; residual scale and smoothing hyperparameters fixed",
+            uncertainty_scope=(
+                "Linear-Gaussian mean-function interval; smoothing hyperparameters fixed; "
+                "residual scale plugged in after a residual-dof correction, not integrated over"
+            ),
         )
 
     def fit(self, records: Iterable[PenaltyRecord], keeper_id: str | None = None) -> SurfaceFit:
