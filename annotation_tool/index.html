@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Penalty Annotation Tool</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header>
+    <h1>Penalty Annotation Tool</h1>
+    <p>Local-only. No upload, no backend, no assumed FPS.</p>
+  </header>
+  <main>
+    <section class="panel setup-grid">
+      <label>Video clip<input id="videoFile" type="file" accept="video/mp4"></label>
+      <label>JSONL destination<button id="chooseJsonl" type="button">Choose/create JSONL</button></label>
+      <label>Keeper ID<input id="keeperId" autocomplete="off" value="keeper_1"></label>
+      <label>Annotator<input id="annotator" autocomplete="name"></label>
+      <label>Source URL<input id="sourceUrl" type="url" placeholder="https://…"></label>
+      <div class="status"><strong>FPS:</strong> <span id="fpsStatus">load an MP4</span></div>
+    </section>
+
+    <section class="video-section">
+      <div id="videoWrap">
+        <video id="video" preload="metadata"></video>
+        <canvas id="overlay"></canvas>
+      </div>
+      <div class="transport">
+        <button data-step="-5">−5 frames</button><button data-step="-1">−1 frame</button>
+        <button id="playPause">Play / pause</button>
+        <button data-step="1">+1 frame</button><button data-step="5">+5 frames</button>
+        <input id="scrubber" type="range" min="0" max="0" value="0" step="1">
+        <output id="frameReadout">frame 0</output>
+      </div>
+    </section>
+
+    <section class="panel workflow">
+      <div class="frames">
+        <button id="markStrike">Mark strike frame</button>
+        <span id="strikeReadout">not marked</span>
+        <button id="markCrossing">Mark crossing/contact frame</button>
+        <span id="crossingReadout">not marked</span>
+      </div>
+      <h2>Click annotations</h2>
+      <div id="markerButtons" class="marker-grid">
+        <button data-marker="left_post_base">1 Left post base</button>
+        <button data-marker="right_post_base">2 Right post base</button>
+        <button data-marker="left_crossbar">3 Left crossbar corner</button>
+        <button data-marker="right_crossbar">4 Right crossbar corner</button>
+        <button data-marker="ball_crossing">5 Ball at crossing</button>
+        <button data-marker="keeper_strike">6 Keeper COM at strike</button>
+        <button data-marker="keeper_crossing">7 Keeper COM at crossing/contact</button>
+        <button data-marker="contact_location">8 Contact location (save only)</button>
+      </div>
+      <p id="activeMarker">Select a marker, then click the video.</p>
+      <div id="coordinateReadout" class="mono"></div>
+    </section>
+
+    <section class="panel form-grid">
+      <label>Outcome<select id="outcome"><option value="goal">Goal</option><option value="save">Save</option><option value="woodwork">Post/crossbar</option><option value="excluded">Off-target — excluded</option></select></label>
+      <label>Dive direction<select id="diveDirection"><option value="L">Left</option><option value="R">Right</option><option value="none">None</option></select></label>
+      <label>Contact body part<input id="bodyPart" placeholder="optional"></label>
+      <fieldset><legend>Quality flags</legend>
+        <label><input type="checkbox" value="camera_cut" class="quality"> camera cut</label>
+        <label><input type="checkbox" value="occlusion" class="quality"> occlusion</label>
+        <label><input type="checkbox" value="replay_speed" class="quality"> replay-speed footage</label>
+        <label><input type="checkbox" value="variable_frame_rate" class="quality" id="vfrFlag"> variable frame rate</label>
+      </fieldset>
+      <button id="saveRecord" class="primary" type="button">Append record to JSONL</button>
+      <button id="resetRecord" type="button">Reset annotation</button>
+    </section>
+    <section class="panel"><h2>Validation</h2><pre id="validation">Load a clip to begin.</pre></section>
+  </main>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

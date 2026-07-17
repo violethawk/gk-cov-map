@@ -1,0 +1,6 @@
+from __future__ import annotations
+
+GOAL_WIDTH_M = 7.32
+GOAL_HEIGHT_M = 2.44
+HALF_GOAL_WIDTH_M = GOAL_WIDTH_M / 2.0
+SMALL_SAMPLE_THRESHOLD = 150

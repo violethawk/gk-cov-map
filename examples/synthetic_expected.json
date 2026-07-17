@@ -1,0 +1,42 @@
+{
+  "fps": 30.0,
+  "strike_frame": 20,
+  "crossing_frame": 32,
+  "flight_time_s": 0.4,
+  "goal_reference_pixels": {
+    "left_post_base": [
+      150.0,
+      455.0
+    ],
+    "right_post_base": [
+      820.0,
+      470.0
+    ],
+    "left_crossbar": [
+      205.0,
+      135.0
+    ],
+    "right_crossbar": [
+      765.0,
+      145.0
+    ]
+  },
+  "ball_crossing_xy_m": [
+    2.05,
+    1.36
+  ],
+  "keeper_pos_at_strike_xy_m": [
+    0.0,
+    0.92
+  ],
+  "keeper_pos_at_crossing_xy_m": [
+    0.78,
+    1.02
+  ],
+  "displacement_m": [
+    0.78,
+    0.09999999999999998
+  ],
+  "outcome": "goal",
+  "censored": true
+}
