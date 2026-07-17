@@ -104,6 +104,48 @@ def _residual_scale_correction(n_effective: float, edf: float) -> float:
 
 
 @dataclass(frozen=True)
+class PriorScale:
+    """Prior precisions for one mode, per coefficient block.
+
+    Smoothness multiplies the second-difference penalty and ridge multiplies the
+    identity, separately for the symmetric and antisymmetric blocks.
+    """
+
+    smooth_symmetric: float
+    smooth_asymmetric: float
+    ridge_symmetric: float
+    ridge_asymmetric: float
+
+
+# Precisions are what the penalized fit consumes, but what they assert is a prior
+# standard deviation on the surface itself, in seconds, before any data:
+#
+#                          standard   small-sample
+#     S at goal centre       0.15 s        0.30 s
+#     S at upper corner      0.21 s        0.41 s
+#     A at upper corner      0.11 s        0.26 s
+#     upper-outer contrast   0.12 s        0.28 s
+#
+# Against a keeper reach time of roughly 0.3-0.5 s these are weakly informative, and
+# deliberately so: the simulator's true contrast of 0.037 s sits 0.31 prior SD from a
+# prior mean of zero, so the prior barely constrains the claim the report leads with
+# rather than shrinking it toward zero by construction. Small-sample mode roughly
+# doubles every figure, which is what the banner means by widened priors.
+#
+# The exact values are not load-bearing and were deliberately not tuned against the
+# simulator, which would leave the acceptance gate marking its own work. Having a
+# prior at all is load-bearing: with the precisions driven to ~0 the n=200 contrast
+# estimate runs to 0.068 s against a 0.037 s truth. But across a 4x sweep -- all
+# halved, all doubled, or a flat 20 everywhere -- the estimate moves only between
+# 0.034 and 0.036 s and the 20-run gate passes throughout. These sit on a plateau,
+# not at an optimum, so the figures above are the specification and the precisions
+# are one arbitrary point that meets it. The tests pin the implied SDs rather than
+# the raw numbers, so a change that moves what the model believes has to say so.
+STANDARD_PRIOR = PriorScale(smooth_symmetric=22.0, smooth_asymmetric=38.0, ridge_symmetric=8.0, ridge_asymmetric=28.0)
+SMALL_SAMPLE_PRIOR = PriorScale(smooth_symmetric=7.0, smooth_asymmetric=10.0, ridge_symmetric=2.0, ridge_asymmetric=5.0)
+
+
+@dataclass(frozen=True)
 class SplineSpecification:
     nx: int = 5
     ny: int = 4
@@ -285,15 +327,18 @@ class CoverageSurfaceModel:
         )
 
     def _prior(self, small_sample: bool, center: float) -> tuple[FloatArray, FloatArray]:
+        """Block-diagonal Gaussian prior over the spline coefficients.
+
+        See STANDARD_PRIOR for what the precisions assert in seconds. Small-sample
+        mode swaps in the wider scale: less ridge and less smoothness, so the surface
+        is freer to follow what little data there is and the reported uncertainty
+        widens to match.
+        """
         ms = self.basis.n_symmetric
         ma = self.basis.n_asymmetric
-        # Wider priors in deliberate small-sample mode: less ridge and less smoothness.
-        smooth_s = 22.0 if not small_sample else 7.0
-        smooth_a = 38.0 if not small_sample else 10.0
-        ridge_s = 8.0 if not small_sample else 2.0
-        ridge_a = 28.0 if not small_sample else 5.0
-        precision_s = smooth_s * self.basis.penalty_symmetric + ridge_s * np.eye(ms)
-        precision_a = smooth_a * self.basis.penalty_asymmetric + ridge_a * np.eye(ma)
+        scale = SMALL_SAMPLE_PRIOR if small_sample else STANDARD_PRIOR
+        precision_s = scale.smooth_symmetric * self.basis.penalty_symmetric + scale.ridge_symmetric * np.eye(ms)
+        precision_a = scale.smooth_asymmetric * self.basis.penalty_asymmetric + scale.ridge_asymmetric * np.eye(ma)
         precision = np.block(
             [[precision_s, np.zeros((ms, ma))], [np.zeros((ma, ms)), precision_a]]
         )

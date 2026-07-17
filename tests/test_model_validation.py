@@ -3,9 +3,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from gkcoverage.constants import GOAL_HEIGHT_M, HALF_GOAL_WIDTH_M
 from gkcoverage.model import (
     SIGMA_BOUNDS_S,
+    STANDARD_PRIOR,
     CoverageSurfaceModel,
+    PriorScale,
     _effective_dof,
     _effective_sample_size,
     _residual_scale_correction,
@@ -110,6 +113,92 @@ def test_residual_scale_correction_tracks_the_residual_degrees_of_freedom() -> N
     assert _residual_scale_correction(40, 18.0) > _residual_scale_correction(200, 18.0)
     # Guarded rather than singular when the fit spends everything.
     assert _residual_scale_correction(10, 20.0) == pytest.approx(np.sqrt(10.0))
+
+
+def _prior_sd_seconds(model: CoverageSurfaceModel, small_sample: bool, row: np.ndarray) -> float:
+    """Prior SD of one surface component at one point, before any data."""
+    precision, _ = model._prior(small_sample=small_sample, center=0.0)
+    return float(np.sqrt(row @ np.linalg.pinv(precision) @ row))
+
+
+def _component_row(model: CoverageSurfaceModel, point: tuple[float, float], component: str) -> np.ndarray:
+    symmetric, asymmetric = model.basis.component_design(np.atleast_2d(point))
+    if component == "symmetric":
+        return np.r_[symmetric[0], np.zeros(asymmetric.shape[1])]
+    return np.r_[np.zeros(symmetric.shape[1]), asymmetric[0]]
+
+
+@pytest.mark.parametrize(
+    ("component", "point", "standard_sd", "small_sample_sd"),
+    [
+        ("symmetric", (0.0, 1.2), 0.15, 0.30),
+        ("symmetric", (3.5, 2.3), 0.21, 0.41),
+        ("asymmetric", (3.5, 2.3), 0.11, 0.26),
+    ],
+)
+def test_prior_precisions_assert_the_documented_scale_in_seconds(
+    component: str, point: tuple[float, float], standard_sd: float, small_sample_sd: float
+) -> None:
+    # The precisions are only auditable through what they imply about the surface, so
+    # pin that rather than the raw numbers: changing a precision changes what the model
+    # believes before it sees a single shot, and the table above STANDARD_PRIOR is the
+    # claim being made. These are the specification; the precisions are one point that
+    # meets it.
+    model = CoverageSurfaceModel()
+    row = _component_row(model, point, component)
+
+    assert _prior_sd_seconds(model, False, row) == pytest.approx(standard_sd, abs=0.01)
+    assert _prior_sd_seconds(model, True, row) == pytest.approx(small_sample_sd, abs=0.01)
+
+
+def test_prior_is_weakly_informative_about_the_headline_contrast() -> None:
+    # The report leads with the left-minus-right contrast, so a prior that pinned it
+    # near zero would manufacture the conservatism the gate then measures. It does not:
+    # the true effect sits well inside one prior SD, and small-sample mode widens it.
+    model = CoverageSurfaceModel()
+    x = np.linspace(HALF_GOAL_WIDTH_M * 0.52, HALF_GOAL_WIDTH_M * 0.92, 8)
+    y = np.linspace(GOAL_HEIGHT_M * 0.55, GOAL_HEIGHT_M * 0.95, 7)
+    xx, yy = np.meshgrid(x, y)
+    positive = np.c_[xx.ravel(), yy.ravel()]
+    negative = positive.copy()
+    negative[:, 0] *= -1.0
+    row = (model.basis.design(negative) - model.basis.design(positive)).mean(axis=0)
+
+    standard = _prior_sd_seconds(model, False, row)
+    assert standard == pytest.approx(0.12, abs=0.01)
+    assert _prior_sd_seconds(model, True, row) == pytest.approx(0.28, abs=0.01)
+    # The truth the gate recovers is a fraction of a prior SD out, not a tail event.
+    assert abs(true_upper_outer_contrast()) < 0.5 * standard
+
+
+@pytest.mark.slow
+def test_headline_claim_sits_on_a_prior_plateau_rather_than_an_optimum(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The precisions were not tuned against the simulator, which would leave the gate
+    # marking its own work. This is the evidence for that being safe: the claim barely
+    # moves across a 4x sweep, so no fitting happened at this scale. Regularization as
+    # such is still load-bearing, which the last case shows.
+    def mean_contrast(scale: PriorScale) -> float:
+        monkeypatch.setattr("gkcoverage.model.STANDARD_PRIOR", scale)
+        return float(
+            np.mean([
+                CoverageSurfaceModel()
+                .fit(simulate_penalties(200, seed=seed))
+                .asymmetry_summary()["time_left_minus_right_s"]
+                for seed in range(8)
+            ])
+        )
+
+    shipped = mean_contrast(STANDARD_PRIOR)
+    halved = mean_contrast(PriorScale(11.0, 19.0, 4.0, 14.0))
+    doubled = mean_contrast(PriorScale(44.0, 76.0, 16.0, 56.0))
+    unregularized = mean_contrast(PriorScale(0.1, 0.1, 0.1, 0.1))
+
+    assert abs(halved - shipped) < 0.005
+    assert abs(doubled - shipped) < 0.005
+    # Without a prior the contrast runs well past the truth the gate checks.
+    assert unregularized > 1.5 * shipped
 
 
 def test_effective_sample_size_discounts_censored_rows() -> None:
